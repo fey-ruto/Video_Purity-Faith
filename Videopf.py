@@ -2,28 +2,23 @@ import cv2
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.applications.inception_v3 import InceptionV3, preprocess_input, decode_predictions
-from flask import Flask, request, jsonify, render_template_string
+import streamlit as st
 from pyngrok import ngrok, conf
 import os
 
 # Set up ngrok
-ngrok.set_auth_token("2jYqJSc13BE5i1jcCGdpFnTpnPy_7KTJqTarwcDwXDbLWfaoa")  # Replace with your actual ngrok authtoken
-
+ngrok.set_auth_token("2jYqJSc13BE5i1jcCGdpFnTpnPy_7KTJqTarwcDwXDbLWfaoa") 
 # Configure ngrok
 config = conf.PyngrokConfig(auth_token="2jYqJSc13BE5i1jcCGdpFnTpnPy_7KTJqTarwcDwXDbLWfaoa")
-ngrok.connect(5000, "http", pyngrok_config=config)
+ngrok_tunnel = ngrok.connect(8501, "http", pyngrok_config=config)
+public_url = ngrok_tunnel.public_url
+st.write(f"ngrok tunnel URL: {public_url}")
 
-# Get the public URL
-public_url = ngrok.get_tunnels()[0].public_url
-print(f" * ngrok tunnel URL: {public_url}")
-
-app = Flask(__name__)
-
-# Loading pre-trained Inception V3 model
+# Load pre-trained Inception V3 model
 model = InceptionV3(weights='imagenet')
 
-UPLOAD_FOLDER = '/content/uploads'
-FRAMES_FOLDER = '/content/frames'
+UPLOAD_FOLDER = 'uploads'
+FRAMES_FOLDER = 'frames'
 ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov'}
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(FRAMES_FOLDER, exist_ok=True)
@@ -43,39 +38,10 @@ def detect_objects(frame):
     results = decode_predictions(predictions, top=5)[0]
     return [result[1].lower() for result in results]
 
-MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB
-app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
-
-@app.route('/', methods=['GET', 'POST'])
-def upload_file():
-    if request.method == 'POST':
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file part'}), 400
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No selected file'}), 400
-        if file and allowed_file(file.filename):
-            filename = os.path.join(UPLOAD_FOLDER, file.filename)
-            file.save(filename)
-            return process_video(filename)
-        else:
-            return jsonify({'error': 'Invalid file type'}), 400
-    return render_template_string('''
-        <!doctype html>
-        <title>Upload Video and Search Objects</title>
-        <h1>Upload a video and search for objects</h1>
-        <form method=post enctype=multipart/form-data>
-            <input type=file name=file accept=".mp4,.avi,.mov">
-            <input type=text name=search placeholder="Enter object to search">
-            <input type=submit value=Upload>
-        </form>
-    ''')
-
-def process_video(video_path):
+def process_video(video_path, search_query):
     cap = cv2.VideoCapture(video_path)
     frame_count = 0
     all_objects = {}
-    search_query = request.form.get('search', '').lower()
     frames = []
 
     while cap.isOpened():
@@ -101,16 +67,32 @@ def process_video(video_path):
             frame_path = os.path.join(FRAMES_FOLDER, frame_filename)
             cv2.imwrite(frame_path, frame)
 
-    if search_query:
-        if search_query in all_objects:
-            return jsonify({
-                'message': f"Object '{search_query}' found in frames: {all_objects[search_query]}",
-                'frames': [f"frame_{fc}.jpg" for fc in all_objects[search_query]]
-            })
+    return all_objects
+
+# Streamlit app
+st.title('Upload Video and Search Objects')
+uploaded_file = st.file_uploader("Choose a video file", type=["mp4", "avi", "mov"])
+search_query = st.text_input("Enter object to search")
+
+if uploaded_file is not None:
+    if allowed_file(uploaded_file.name):
+        file_path = os.path.join(UPLOAD_FOLDER, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        st.write("Processing video...")
+        all_objects = process_video(file_path, search_query.lower())
+        
+        if search_query:
+            if search_query.lower() in all_objects:
+                st.write(f"Object '{search_query}' found in frames: {all_objects[search_query.lower()]}")
+                for frame_num in all_objects[search_query.lower()]:
+                    frame_img_path = os.path.join(FRAMES_FOLDER, f"frame_{frame_num}.jpg")
+                    st.image(frame_img_path, caption=f"Frame {frame_num}")
+            else:
+                st.write("Object doesn't exist!!!")
         else:
-            return jsonify({'error': "Object doesn't exist!!!"}), 404
-
-    return jsonify({'detected_objects': all_objects})
-
-if __name__ == '__main__':
-    app.run(port=5000)
+            st.write("Detected objects in the video:")
+            st.json(all_objects)
+    else:
+        st.write("Invalid file type")
