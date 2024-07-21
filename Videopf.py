@@ -1,3 +1,11 @@
+!pip install flask-ngrok
+!pip install flask
+
+!pip install pyngrok
+!pip install streamlit opencv-python-headless tensorflow pyngrok
+
+!pip install opencv-python-headless
+
 import cv2
 import numpy as np
 import tensorflow as tf
@@ -6,22 +14,32 @@ import streamlit as st
 from pyngrok import ngrok, conf
 import os
 
+# Close any existing tunnels
+for tunnel in ngrok.get_tunnels():
+    ngrok.disconnect(tunnel.public_url)
+
 # Set up ngrok
-ngrok.set_auth_token("2jYqJSc13BE5i1jcCGdpFnTpnPy_7KTJqTarwcDwXDbLWfaoa") 
+ngrok.set_auth_token("2jZMbmksjl96RvHqjlPkPABNopD_5NBfiUFNChZMRe3S48Z71")  # Replace with your actual ngrok authtoken
+
 # Configure ngrok
-config = conf.PyngrokConfig(auth_token="2jYqJSc13BE5i1jcCGdpFnTpnPy_7KTJqTarwcDwXDbLWfaoa")
-ngrok_tunnel = ngrok.connect(8501, "http", pyngrok_config=config)
-public_url = ngrok_tunnel.public_url
-st.write(f"ngrok tunnel URL: {public_url}")
+config = conf.PyngrokConfig(auth_token="2jZMbmksjl96RvHqjlPkPABNopD_5NBfiUFNChZMRe3S48Z71")
+public_url = ngrok.connect(5000, "http", pyngrok_config=config)
+print(f" * ngrok tunnel URL: {public_url}")
+
+app = Flask(__name__)
 
 # Load pre-trained Inception V3 model
 model = InceptionV3(weights='imagenet')
 
-UPLOAD_FOLDER = 'uploads'
-FRAMES_FOLDER = 'frames'
+UPLOAD_FOLDER = '/content/uploads'
+FRAMES_FOLDER = '/content/frames'
 ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov'}
+MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB limit
+
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(FRAMES_FOLDER, exist_ok=True)
+
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -38,10 +56,38 @@ def detect_objects(frame):
     results = decode_predictions(predictions, top=5)[0]
     return [result[1].lower() for result in results]
 
-def process_video(video_path, search_query):
+@app.route('/', methods=['GET', 'POST'])
+def upload_file():
+    if request.method == 'POST':
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file part'}), 400
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No selected file'}), 400
+        if file and allowed_file(file.filename):
+            if file.content_length > MAX_CONTENT_LENGTH:
+                return jsonify({'error': 'File size exceeds limit'}), 413
+            filename = os.path.join(UPLOAD_FOLDER, file.filename)
+            file.save(filename)
+            return process_video(filename)
+        else:
+            return jsonify({'error': 'Invalid file type'}), 400
+    return render_template_string('''
+        <!doctype html>
+        <title>Upload Video and Search Objects</title>
+        <h1>Upload a video and search for objects</h1>
+        <form method=post enctype=multipart/form-data>
+            <input type=file name=file accept=".mp4,.avi,.mov">
+            <input type=text name=search placeholder="Enter object to search">
+            <input type=submit value=Upload>
+        </form>
+    ''')
+
+def process_video(video_path):
     cap = cv2.VideoCapture(video_path)
     frame_count = 0
     all_objects = {}
+    search_query = request.form.get('search', '').lower()
     frames = []
 
     while cap.isOpened():
@@ -61,38 +107,22 @@ def process_video(video_path, search_query):
             if obj not in all_objects:
                 all_objects[obj] = []
             all_objects[obj].append(frame_number)
-
+        
         if search_query and search_query in objects:
             frame_filename = f"frame_{frame_number}.jpg"
             frame_path = os.path.join(FRAMES_FOLDER, frame_filename)
             cv2.imwrite(frame_path, frame)
 
-    return all_objects
-
-# Streamlit app
-st.title('Upload Video and Search Objects')
-uploaded_file = st.file_uploader("Choose a video file", type=["mp4", "avi", "mov"])
-search_query = st.text_input("Enter object to search")
-
-if uploaded_file is not None:
-    if allowed_file(uploaded_file.name):
-        file_path = os.path.join(UPLOAD_FOLDER, uploaded_file.name)
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        
-        st.write("Processing video...")
-        all_objects = process_video(file_path, search_query.lower())
-        
-        if search_query:
-            if search_query.lower() in all_objects:
-                st.write(f"Object '{search_query}' found in frames: {all_objects[search_query.lower()]}")
-                for frame_num in all_objects[search_query.lower()]:
-                    frame_img_path = os.path.join(FRAMES_FOLDER, f"frame_{frame_num}.jpg")
-                    st.image(frame_img_path, caption=f"Frame {frame_num}")
-            else:
-                st.write("Object doesn't exist!!!")
+    if search_query:
+        if search_query in all_objects:
+            return jsonify({
+                'message': f"Object '{search_query}' found in frames: {all_objects[search_query]}",
+                'frames': [f"frame_{fc}.jpg" for fc in all_objects[search_query]]
+            })
         else:
-            st.write("Detected objects in the video:")
-            st.json(all_objects)
-    else:
-        st.write("Invalid file type")
+            return jsonify({'error': "Object doesn't exist!!!"}), 404
+    
+    return jsonify({'detected_objects': all_objects})
+
+if __name__ == '__main__':
+    app.run(port=5000)
