@@ -1,11 +1,3 @@
-!pip install flask-ngrok
-!pip install flask
-
-!pip install pyngrok
-!pip install streamlit opencv-python-headless tensorflow pyngrok
-
-!pip install opencv-python-headless
-
 import cv2
 import numpy as np
 import tensorflow as tf
